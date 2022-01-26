@@ -10,17 +10,16 @@ import Control.Monad.ST (ST)
 import Control.Monad.ST as ST
 import Data.Array ((..))
 import Data.Functor.Mu (Mu(..))
-import Data.List (List(..), (:))
-import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Class.Console (log)
-import Foreign as Foreign
+import Effect.Console (logShow)
+import Foreign (Foreign)
 import Makina (class Makina)
 import Makina as Makina
 import Partial.Unsafe (unsafeCrashWith)
 import Test.QuickCheck (arbitrary)
 import Test.QuickCheck.Gen (Gen)
+import Unsafe.Coerce (unsafeCoerce)
 
 data TreeF a n
   = Leaf a
@@ -30,24 +29,24 @@ instance Makina (TreeF a) where
   destructure = case _ of
     Leaf a ->
       { tag: "Leaf"
-      , fields: Foreign.unsafeToForeign { a }
-      , points: Foreign.unsafeToForeign []
+      , fields: unsafeCoerce { a }
+      , points: unsafeCoerce []
       }
     Fork a b ->
       { tag: "Fork"
-      , fields: Foreign.unsafeToForeign {}
-      , points: Foreign.unsafeToForeign [ a, b ]
+      , fields: unsafeCoerce {}
+      , points: unsafeCoerce [ a, b ]
       }
 
   restructure { tag, fields, points } =
     case tag of
       "Leaf" ->
         let
-          { a } = Foreign.unsafeFromForeign fields
+          { a } = unsafeCoerce fields
         in
           Leaf a
       "Fork" ->
-        case Foreign.unsafeFromForeign points of
+        case unsafeCoerce points of
           [ a, b ] ->
             Fork a b
           _ ->
@@ -55,50 +54,16 @@ instance Makina (TreeF a) where
       _ ->
         unsafeCrashWith "Unrecognized tag."
 
-mapDemo :: forall a b. (a -> b) -> TreeF Int a -> TreeF Int b
-mapDemo f x = ST.run go
-  where
-  go :: forall r. ST r _
-  go = do
-    m <- Makina.create x
-
-    initial <- m Nothing
-
-    let
-      aux :: _ -> ST r _
-      aux (Makina.More current) = do
-        next <- m $ Just $ f current
-        aux next
-      aux (Makina.Done result) =
-        pure result
-
-    aux initial
-
 type Algebra f a = f a -> a
 
+foreign import cataImpl :: Foreign
+
 cata :: forall f a. Makina f => Algebra f a -> Mu f -> a
-cata algebra (In initialStructure) = ST.run go
-  where
-  go :: forall r. ST r _
-  go = do
-    initialFeed <- Makina.create initialStructure
-    initialIndex <- initialFeed Nothing
-    tailRecM loop { feed: initialFeed, index: initialIndex, stack: Nil }
-    where
-    loop :: _ -> ST r _
-    loop { feed, index, stack } =
-      case index of
-        Makina.More (In nextStructure) -> do
-          nextFeed <- Makina.create nextStructure
-          nextIndex <- nextFeed Nothing
-          pure $ Loop { feed: nextFeed, index: nextIndex, stack: feed : stack }
-        Makina.Done doneResult ->
-          case stack of
-            prevFeed : stackTail -> do
-              prevIndex <- prevFeed $ Just $ algebra doneResult
-              pure $ Loop { feed: prevFeed, index: prevIndex, stack: stackTail }
-            Nil ->
-              pure $ Done $ algebra doneResult
+cata =
+  (unsafeCoerce cataImpl)
+    (Makina.create :: f a -> _)
+    Makina.init
+    Makina.step
 
 cataDemo :: Mu (TreeF Int) -> Int
 cataDemo = cata algebra
@@ -147,17 +112,4 @@ foldingTree = mkBenchmark
 
 main :: Effect Unit
 main = do
-  case mapDemo (_ + 10) $ Leaf 1 of
-    Leaf a ->
-      log $ show a
-    Fork a b -> do
-      log $ show a
-      log $ show b
-  case mapDemo (_ + 10) $ Fork 2 3 of
-    Leaf a ->
-      log $ show a
-    Fork a b -> do
-      log $ show a
-      log $ show b
-  log $ show $ cataDemo (fork (fork (leaf 10) (leaf 11)) (fork (leaf 10) (leaf 11)))
   runSuite [ foldingTree ]
